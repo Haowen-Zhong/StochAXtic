@@ -1,0 +1,26 @@
+[build-system]
+requires      = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "StochAXtic"
+version         = "0.1.0"
+description     = "Fast Omega_GW(f) of a compact-binary population (all frequencies per waveform call)"
+authors         = [{ name = "Haowen Zhong", email = "zhong461@umn.edu" }]
+requires-python = ">=3.9"
+dependencies    = ["numpy", "scipy", "astropy"]
+
+[project.optional-dependencies]
+# lalsuite provides the waveforms; on clusters it usually comes from the
+# container or conda environment instead
+lal  = ["lalsuite"]
+# FastOmega: differentiable Omega_GW(f; Lambda) for numpyro / JAX
+fast = ["jax"]
+test = ["pytest"]
+
+[tool.setuptools]
+packages = ["stochaxtic"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::RuntimeWarning"]
