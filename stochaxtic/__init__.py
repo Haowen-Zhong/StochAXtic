@@ -15,7 +15,7 @@ from .waveforms import WaveformModelBase, get_waveform_model
 from .integrator import (OmegaIntegrator, OmegaResult, RedshiftKernel, Proposal,
                          compute_omega)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["OmegaIntegrator", "OmegaResult", "compute_omega", "RedshiftKernel",
            "Proposal", "get_mass_model", "get_rate_model", "get_waveform_model",

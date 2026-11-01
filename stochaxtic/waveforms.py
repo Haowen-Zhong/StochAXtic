@@ -108,11 +108,12 @@ class LALWaveform(WaveformModelBase):
             try:
                 hp, hc = call(freqs)
             except RuntimeError:
-                # PhenomX/XPHM refuse a sequence that starts beyond their end
-                # frequency (M f = 0.3 for the 22 mode).  If the whole band is
-                # already in the ringdown, prepend M f = 0.05 so that LAL builds
-                # the waveform, then drop that point: the requested values are
-                # LAL's own (zero above the cutoff).
+                # Some models refuse a sequence whose first point (taken as
+                # f_min) lies beyond their end frequency: IMRPhenomXPHM raises
+                # for M f > 0.3, while XAS returns zeros and XHM a negligible
+                # tail.  The sequence interface evaluates each frequency
+                # independently, so prepend M f = 0.05 to pass LAL's check and
+                # drop it: the requested values are LAL's own.
                 if freqs[0] * m_tot * lal.MTSUN_SI < 0.1:
                     raise
                 hp, hc = call(np.concatenate(([0.05 / (m_tot * lal.MTSUN_SI)], freqs)))

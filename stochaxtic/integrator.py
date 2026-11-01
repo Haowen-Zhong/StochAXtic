@@ -47,20 +47,20 @@ class RedshiftKernel:
     """
     K(Mc_det, q) = int dz dN/(dz dt)(z) p(Mc_det/(1+z), q) / ((1+z) dL(z)^2)
 
-    in s^-1 Mpc^-2 per unit (Mc_det, q), dL in Mpc.  With x = ln(1+z),
-    dz = (1+z) dx cancels the 1/(1+z) from dMc = dMc_det/(1+z).
+    in s^-1 Mpc^-2 per unit (Mc_det, q), dL in Mpc.  With xi = ln(1+z),
+    dz = (1+z) dxi cancels the 1/(1+z) from dMc = dMc_det/(1+z).
     """
 
     def __init__(self, mass_model, rate_model, z_min, z_max, n_z, cosmo=COSMO):
         self.mass = mass_model
-        x  = np.linspace(np.log1p(z_min), np.log1p(z_max), n_z)
-        z  = np.expm1(x)
-        wx = np.full(n_z, x[1] - x[0])
-        wx[[0, -1]] *= 0.5
+        xi  = np.linspace(np.log1p(z_min), np.log1p(z_max), n_z)
+        z   = np.expm1(xi)
+        wxi = np.full(n_z, xi[1] - xi[0])
+        wxi[[0, -1]] *= 0.5
         dNdz = rate_model.event_rate_density(z, cosmo)                # s^-1
         self.z      = z
-        self.weight = wx * dNdz / cosmo.luminosity_distance(z) ** 2   # (n_z,)
-        self.N_tot  = float(np.sum(wx * (1 + z) * dNdz))              # events / s
+        self.weight = wxi * dNdz / cosmo.luminosity_distance(z) ** 2   # (n_z,)
+        self.N_tot  = float(np.sum(wxi * (1 + z) * dNdz))              # events / s
 
     def __call__(self, Mc_det, q, chunk=2048):
         """K for arrays Mc_det, q of shape (c,)."""
@@ -274,7 +274,7 @@ class OmegaIntegrator:
     proposal_kwargs; the defaults are tuned for Omega_GW over 5-1000 Hz.
 
     spins: None, "aligned" or "precessing".  Spins are drawn uniformly
-    (a in [0, a_max], cos t in [-1, 1], phi12 in [0, 2 pi)) and weighted by
+    (a in [0, a_max], cos t in [-1, 1], phi1 and phi12 in [0, 2 pi)) and weighted by
     the spin model of spin_models.py; they are defined at f_ref =
     x_ref / (M_det T_sun), the same convention as FastOmega.  "aligned"
     keeps only a cos t.  f_ref (Hz) instead fixes the detector-frame reference
@@ -287,7 +287,7 @@ class OmegaIntegrator:
                  rate_kwargs=None, waveform_kwargs=None,
                  z_min=Z_MIN_DEFAULT, z_max=Z_MAX_DEFAULT, n_z=1000,
                  n_z_proposal=200, proposal_kwargs=None, spins=None,
-                 spin_model="lvk_default", spin_params=None, a_max=1.0, x_ref=0.005,
+                 spin_model="gwtc3_default", spin_params=None, a_max=1.0, x_ref=0.005,
                  f_ref=None, n_proc=1, verbose=True):
         self.mass = (get_mass_model(mass_model, **(mass_kwargs or {}))
                      if isinstance(mass_model, str) else mass_model)
@@ -380,7 +380,7 @@ class OmegaIntegrator:
         return res
 
     def _replica(self, rep, log2_points, seed, antithetic, chunk, pool):
-        dim = 4 + (5 if self.spins else 0)
+        dim = 4 + {None: 0, "aligned": 5, "precessing": 6}[self.spins]
         sobol = qmc.Sobol(d=dim, scramble=True, seed=np.random.default_rng([seed, rep]))
         x = sobol.random_base2(log2_points)
         Mc_det, q, u, phi, g = self.proposal.sample(x[:, :4])
@@ -390,14 +390,16 @@ class OmegaIntegrator:
             a1, a2 = self.a_max * xs[:, 0], self.a_max * xs[:, 1]
             c1, c2 = 2 * xs[:, 2] - 1, 2 * xs[:, 3] - 1
             p12    = 2 * np.pi * xs[:, 4]
-            # proposal density of (a1, a2, c1, c2) is 1/(4 a_max^2); phi12 cancels
+            # phi1: azimuth of spin 1's in-plane part relative to the orbital separation
+            p1     = 2 * np.pi * xs[:, 5] if self.spins == "precessing" else np.zeros(N)
+            # proposal density of (a1, a2, c1, c2) is 1/(4 a_max^2); phi1 and phi12 cancel
             w_spin = self._spin_density(a1, a2, c1, c2) * 4 * self.a_max ** 2
             if self.spins == "aligned":
                 r1 = r2 = np.zeros(N)
             else:
                 r1, r2 = np.sqrt(1 - c1 ** 2), np.sqrt(1 - c2 ** 2)
-            S1 = np.stack([a1 * r1, np.zeros(N), a1 * c1], axis=1)
-            S2 = np.stack([a2 * r2 * np.cos(p12), a2 * r2 * np.sin(p12), a2 * c2], axis=1)
+            S1 = np.stack([a1 * r1 * np.cos(p1), a1 * r1 * np.sin(p1), a1 * c1], axis=1)
+            S2 = np.stack([a2 * r2 * np.cos(p1 + p12), a2 * r2 * np.sin(p1 + p12), a2 * c2], axis=1)
         else:
             w_spin = np.ones(N)
             S1 = S2 = np.zeros((N, 3))
