@@ -1,18 +1,14 @@
-# integrator.py
-# Omega_GW(f) of a compact-binary population, all frequencies at once.
+# Monte Carlo Omega_GW(f) of a compact-binary population, all frequencies at once:
 #
 #   Omega_GW(f) = 4 pi^2 f^3 / (3 H0^2)
 #                 * int dz dN/(dz dt) < |h+(f)|^2 + |hx(f)|^2 >_{m1, m2, iota, phi}
 #
-# with the waveform at the true dL(z) and detector-frame masses m(1+z).
-# No overlap reduction function enters: Omega_GW is a property of the source
-# population alone.
+# with the waveform at dL(z) and detector-frame masses m(1+z).  Omega_GW is a property
+# of the population alone (no overlap reduction function).
 #
-# Algorithm (see notes/allfreq_algorithm_note.tex of MOGWAS for the
-# derivation):
-# 1) The waveform depends on z only through Mc_det = Mc (1+z) and 1/dL, so
-#    with I(f) = I_1Mpc(f; Mc_det, q, iota, phi) / dL^2 the z integral
-#    becomes a deterministic kernel
+# 1) The waveform depends on z only through Mc_det = Mc (1+z) and 1/dL, so with
+#    I(f) = I_1Mpc(f; Mc_det, q, iota, phi) / dL^2 the z integral is a deterministic
+#    kernel
 #        K(Mc_det, q) = int dz dN/(dz dt) p(Mc_det/(1+z), q) / ((1+z) dL^2)
 #    evaluated by the trapezoid rule on a grid uniform in ln(1+z).
 # 2) theta = (ln Mc_det, ln q, cos iota, phi) is integrated by randomised
@@ -21,10 +17,9 @@
 #        Omega(f) = 4 pi^2 f^3/(3 H0^2) E_g[ Mc_det q K / (2 g) I_1Mpc(f) ]
 # 3) Independent scramblings (replicas) give the error bar.
 #
-# The estimate is unbiased for any proposal whose support covers the
-# integrand (guaranteed by the defensive uniform component eps > 0); the
-# proposal only affects the variance.  Nothing assumes a particular waveform
-# symmetry.
+# Unbiased for any proposal that covers the integrand (the defensive uniform part
+# eps > 0 guarantees it); the proposal only affects the variance.  No waveform
+# symmetry is assumed.
 
 import time
 from dataclasses import dataclass, field
@@ -87,14 +82,12 @@ class Proposal:
         uniform part keeps every cell of the rectangle sampled.
     cos(iota): g_u ∝ A(u)^iota_power, A(u) = ((1+u^2)/2)^2 + u^2, the
         quadrupole inclination factor of I.  Symmetric in u.
-
-    The defaults were tuned for Omega_GW (bpl_double_gaussian +
-    madau_dickinson, XAS, 5-1000 Hz, 16 replicas x 2^11 points): median /
-    max relative error 0.05% / 0.13%, three times smaller than with
-    eps=0.1, tilts=(-3,0,4), iota_power=2, and antithetic pairs only
-    doubled the cost (I is even in cos(iota) for quadrupole-dominated
-    signals).
     phi: uniform on [0, 2 pi).
+
+    Defaults tuned for Omega_GW (bpl_double_gaussian + madau_dickinson, XAS,
+    5-1000 Hz, 16 replicas x 2^11 points): median / max relative error
+    0.05% / 0.13%.  Antithetic pairs in cos(iota) only double the cost (I is
+    even in cos(iota) for quadrupole-dominated signals).
     """
 
     def __init__(self, kernel, mass_model, z_min, z_max, n_mc=200, n_q=60,
@@ -287,7 +280,7 @@ class OmegaIntegrator:
                  rate_kwargs=None, waveform_kwargs=None,
                  z_min=Z_MIN_DEFAULT, z_max=Z_MAX_DEFAULT, n_z=1000,
                  n_z_proposal=200, proposal_kwargs=None, spins=None,
-                 spin_model="gwtc3_default", spin_params=None, a_max=1.0, x_ref=0.005,
+                 spin_model="gwtc5_default", spin_params=None, a_max=1.0, x_ref=0.005,
                  f_ref=None, n_proc=1, verbose=True):
         self.mass = (get_mass_model(mass_model, **(mass_kwargs or {}))
                      if isinstance(mass_model, str) else mass_model)
@@ -335,7 +328,7 @@ class OmegaIntegrator:
         """4 pi^2 f^3 / (3 H0^2), times S_REF to undo the internal units."""
         return 4.0 * np.pi ** 2 * self.freqs ** 3 / (3.0 * H0_SI ** 2) * S_REF
 
-    def run(self, n_rep=8, log2_points=12, seed=20260929, rep_start=0,
+    def run(self, n_rep=8, log2_points=12, seed=20261126, rep_start=0,
             antithetic=False, chunk=512):
         """
         Run replicas rep_start .. rep_start + n_rep - 1, each with 2^log2_points
@@ -453,7 +446,7 @@ def _params(model):
 
 
 def compute_omega(mass_model="bpl_double_gaussian", rate_model="madau_dickinson",
-                  waveform="IMRPhenomXAS", n_rep=8, log2_points=12, seed=20260929,
+                  waveform="IMRPhenomXAS", n_rep=8, log2_points=12, seed=20261126,
                   **kwargs):
     """One-call convenience wrapper around OmegaIntegrator(...).run(...)."""
     oi = OmegaIntegrator(mass_model, rate_model, waveform, **kwargs)

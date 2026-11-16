@@ -1,16 +1,11 @@
-# jax_populations.py
-# JAX versions of the population models, for fast_omega.FastOmega.
+# JAX population models for fast_omega.FastOmega; same shapes and parameterisations
+# as mass_models.py and cosmology.py.
 #
-# Mass models return the *unnormalised* joint density p(m1, m2) on m2 <= m1;
-# FastOmega normalises it on its own grid, so only the shape matters (but
-# conditional normalisations that are part of a model's definition, like
-# p(m2 | m1) of bpl_double_gaussian, are kept).  Rate models return the
-# comoving merger rate R(z) in Gpc^-3 yr^-1.
-#
-# Every model is a function of (arrays, params) where params is a dict of
-# scalars; missing keys fall back to DEFAULTS, so numpyro can sample any
-# subset of the hyperparameters.  The shapes and parameterisations follow
-# mass_models.py and cosmology.py exactly.
+# Mass models return the unnormalised p(m1, m2) on m2 <= m1 (FastOmega normalises on
+# its grid), keeping conditional normalisations that belong to a model, such as
+# p(m2 | m1) of bpl_double_gaussian.  Rate models return R(z) in Gpc^-3 yr^-1.
+# Every model is a function of (arrays, params), params a dict of scalars; missing
+# keys fall back to the defaults, so numpyro can sample any subset.
 
 import numpy as np
 import jax
@@ -25,7 +20,7 @@ from .mass_models import GWTC5_BPL2G, NSBHPowerLawGaussianModel, PowerLawPlusPea
 # ==========================================================
 # Shape helpers (gradient safe: no nan/inf in masked-out branches)
 # ==========================================================
-# ✅ Reviewd HZ 10/23/26
+
 def planck_taper(m, m_min, delta_m):
     f   = (m - m_min) / delta_m
     fs  = jnp.clip(f, 1e-6, 1.0 - 1e-6)
@@ -33,11 +28,11 @@ def planck_taper(m, m_min, delta_m):
     mid = jax.nn.sigmoid(-arg)        # = 1/(1+e^arg); its gradient stays finite at |arg| = 700
     return jnp.where(f <= 0.0, 0.0, jnp.where(f >= 1.0, 1.0, mid))
 
-    # ✅ Reviewd HZ 10/23/26
+
 def _safe_pow(x, a):
     return jnp.where(x > 0, jnp.where(x > 0, x, 1.0) ** a, 0.0)
 
-# ✅ Reviewd HZ 10/23/26
+
 def interp_uniform(x, x0, dx, table):
     """
     Linear interpolation of `table` sampled at x0 + dx * arange(n), clamped
@@ -51,7 +46,7 @@ def interp_uniform(x, x0, dx, table):
     f = s - i
     return table[i] * (1.0 - f) + table[i + 1] * f
 
-# ✅ Reviewd HZ 10/23/26
+
 def _between(m, lo=None, hi=None, w=0.0):
     """
     Indicator of lo <= m <= hi.  With w > 0 each edge is a logistic step of
@@ -66,7 +61,7 @@ def _between(m, lo=None, hi=None, w=0.0):
             out = out * jnp.where(w > 0, jax.nn.sigmoid(x / ws), (x >= 0).astype(m.dtype))
     return out
 
-# ✅ Reviewd HZ 10/26/26
+
 def _expm1_over_x(x, L):
     """
     expm1(x L) / x, with a series for |x| < 1e-4 so that the value and d/dx
@@ -104,7 +99,7 @@ def _truncnorm_logpdf(x, mu, sig, lo, hi):
 _LN_M2_0, _D_LN_M2, _N_M2 = np.log(0.5), np.log(4000.0) / 5999, 6000
 _M2_GRID = np.exp(_LN_M2_0 + _D_LN_M2 * np.arange(_N_M2))
 
-# ✅ Reviewd HZ 10/26/26
+
 def bpl_double_gaussian(m1, m2, p):
     a1, a2, mb = p["alpha_m_1"], p["alpha_m_2"], p["m_break"]
     mmin, mmax = p["m_1_min"], p["m_max"]
@@ -136,25 +131,25 @@ def bpl_double_gaussian(m1, m2, p):
     ok  = (m2 <= m1) & (Z2 > 1e-150)
     return jnp.where(ok, p1 * p_m2(m2) / jnp.where(ok, Z2, 1.0), 0.0)
 
-# ✅ Reviewd HZ 10/26/26
+
 def uniform(m1, m2, p):
     w = p.get("_w", 0.0)
     return (_between(m1, p["m1_min"], p["m_max"], w) * _between(m2, lo=p["m2_min"], w=w)
             * jnp.where(m2 <= m1, 1.0, 0.0))
 
-# ✅ Reviewd HZ 10/26/26
+
 def truncated_powerlaw(m1, m2, p):
     w = p.get("_w", 0.0)
     return (_between(m1, p["m1_min"], p["m_max"], w) * _between(m2, lo=p["m2_min"], w=w)
             * jnp.where(m2 <= m1, _safe_pow(m1 * m2, -p["alpha"]), 0.0))
 
-# ✅ Reviewd HZ 10/26/26
+
 def nsbh(m1, m2, p):
     w = p.get("_w", 0.0)
     return (_between(m1, p["M1_MIN"], p["M_MAX"], w) * _between(m2, p["M2_MIN"], p["M2_MAX"], w)
             * jnp.where(m2 <= m1, 1.0 / m1, 0.0))
 
-# ✅ Reviewd HZ 10/26/26
+
 def nsbh_powerlaw_gaussian(m1, m2, p):
     ns_min = NSBHPowerLawGaussianModel.NS_MIN
     p1 = _safe_pow(m1, -p["alpha_BH"])
@@ -170,7 +165,6 @@ def nsbh_powerlaw_gaussian(m1, m2, p):
     return jnp.where(ok, p1 * pq / m1, 0.0) * (_between(m1, p["m_min_BH"], p["m_max_BH"], w)
                                               * _between(m2, ns_min, p["m_max_NS"], w))
 
-# ✅ Reviewd HZ 10/26/26
 def power_law_plus_peak(m1, m2, p):
     # see mass_models.PowerLawPlusPeakModel; p(m2 | m1) normalised as in bpl_double_gaussian
     a, mmin, mmax, lam = p["alpha_m"], p["m_min"], p["m_max"], p["lambda_peak"]
@@ -191,7 +185,7 @@ def power_law_plus_peak(m1, m2, p):
     return jnp.where(ok, p1 * p_m2(m2) / jnp.where(ok, Z2, 1.0), 0.0)
 
 
-# ✅ Reviewd HZ 10/26/26
+
 MASS_MODELS = {
     "bpl_double_gaussian": (bpl_double_gaussian, dict(GWTC5_BPL2G)),
     "uniform":             (uniform, dict(m1_min=1.0, m2_min=1.0, m_max=2.0)),
@@ -221,7 +215,7 @@ def constant(z, p):
     return p["R0"] * jnp.ones_like(z)
 
 
-# ✅ Reviewd HZ 10/26/26
+
 class TimeDelayedMadauDickinson:
     """
     Same model and quadrature as cosmology.TimeDelayedMadauDickinsonModel
@@ -232,8 +226,7 @@ class TimeDelayedMadauDickinson:
     are numpy tables built here (uniform in ln(1+z) and in t) and interpolated
     linearly in JAX; the t(z) table changes R by ~1e-8.  R = 0 above zf_max.
     RATE_MODELS holds an instance for cosmology.COSMO; FastOmega builds one with
-    its own cosmology.  (Until 2026-10-22 the object was built for one z array
-    and silently ignored the z passed to __call__.)
+    its own cosmology.
     """
 
     def __init__(self, cosmo, zf_max=10.0, n_td=64, n_tab=4000, n_t=40001):
@@ -281,10 +274,9 @@ RATE_MODELS = {"madau_dickinson": madau_dickinson, "power_law": power_law,
 # ==========================================================
 # Spin models: density of (a1, a2, cos t1, cos t2), mass independent
 # ==========================================================
-# The in-plane azimuth difference phi12 is uniform and cancels against the
-# proposal.  Magnitudes live on [0, a_max] (a_max is fixed by FastOmega's
-# spin table, e.g. 1 for BBH, ~0.05 for BNS): a / a_max ~ Beta.
-# ✅ Reviewd HZ 10/26/26
+# The in-plane azimuth difference phi12 is uniform and cancels against the proposal.
+# Magnitudes live on [0, a_max], fixed by FastOmega's spin table (1 for BBH, ~0.05 for BNS).
+
 def gwtc3_default_spin(a1, a2, c1, c2, p, a_max=1.0):
     """
     LVK "Default" spin model (GWTC-2/3):
@@ -302,23 +294,23 @@ def gwtc3_default_spin(a1, a2, c1, c2, p, a_max=1.0):
     pt = p["zeta"] * g(c1) * g(c2) + (1.0 - p["zeta"]) / 4.0
     return pa * pt
 
-# ✅ Reviewd HZ 10/26/26
+
 def _truncnorm_pdf(x, mu, sig, lo, hi):
     """Normal(mu, sig) truncated to [lo, hi]."""
     g = jnp.exp(_truncnorm_logpdf(jnp.clip(x, lo, hi), mu, sig, lo, hi))
     return jnp.where((x >= lo) & (x <= hi), g, 0.0)
 
 
-# ✅ Reviewd HZ 10/26/26
+
 def gwtc5_default_spin(a1, a2, c1, c2, p, a_max=1.0):
     """
     LVK "Default BBH" spin model of GWTC-4.0/5.0 (arXiv:2605.27226, App. B.4, Eqs. B15-B16):
       a_i ~ Normal(mu_chi, sigma_chi) truncated to [0, chi_max]          (iid; chi_max = 1 for BHs)
       p(cos t1, cos t2) = zeta N(c1) N(c2) + (1 - zeta)/4,
       N = Normal(mu_t, sigma_t) truncated to [-1, 1]   (mu_t free, Vitale et al. 2022)
-    gwtc3_default is the special case with a Beta magnitude and mu_t = 1.  The magnitudes
-    are absolute (not a / a_max); FastOmega's self-normalised weights renormalise the
-    density on the table's box [0, a_max], so a_max < chi_max silently drops a > a_max.
+    gwtc3_default has a Beta magnitude and mu_t = 1.  Magnitudes are absolute (not
+    a / a_max); FastOmega's self-normalised weights renormalise the density on [0, a_max],
+    so a_max < chi_max silently drops a > a_max.
     """
     pa = (_truncnorm_pdf(a1, p["mu_chi"], p["sigma_chi"], 0.0, p["chi_max"])
           * _truncnorm_pdf(a2, p["mu_chi"], p["sigma_chi"], 0.0, p["chi_max"]))
@@ -326,49 +318,62 @@ def gwtc5_default_spin(a1, a2, c1, c2, p, a_max=1.0):
     return pa * (p["zeta"] * nt(c1) * nt(c2) + (1.0 - p["zeta"]) / 4.0)
 
 
+def uniform_isotropic_spin(a1, a2, c1, c2, p, a_max=1.0):
+    """
+    Uniform-isotropic spins for neutron stars (BNS), no hyperparameters:
+      a_i uniform on [0, a_max]          (iid; a_max = 0.05 is the LVK "low-spin" prior)
+      cos t1, cos t2 uniform on [-1, 1]  (isotropic; chi_iz = a_i cos t_i is not uniform)
+    The BBH models are fits to black holes and do not apply to neutron stars.  On a BNS
+    table (uniform proposal) this is the proposal itself: all importance weights are equal.
+    """
+    am1, am2 = (a_max, a_max) if np.ndim(a_max) == 0 else a_max      # per-component bounds
+    shape = jnp.broadcast_shapes(*(jnp.shape(v) for v in (a1, a2, c1, c2)))
+    return jnp.full(shape, 0.25 / (am1 * am2))
+
+
 SPIN_MODELS = {
-    # GWTC-3 medians of the fiducial analysis (O1-O3, Power Law + Peak, power-law redshift;
-    # Zenodo 10.5281/zenodo.5655785): mu_chi = 0.283 and sigma_chi^2 = 0.0299 (mean and variance
-    # of the Beta magnitudes, LVK's parameters) -> alpha_chi = 1.64, beta_chi = 4.15; zeta (xi_spin)
-    # = 0.656, sigma_t (sigma_spin) = 1.54
+    # GWTC-3 medians (fiducial O1-O3 analysis, Zenodo 10.5281/zenodo.5655785): Beta mean 0.283
+    # and variance 0.0299 -> alpha_chi = 1.64, beta_chi = 4.15; zeta (xi_spin) = 0.656,
+    # sigma_t (sigma_spin) = 1.54
     "gwtc3_default": (gwtc3_default_spin, dict(alpha_chi=1.64, beta_chi=4.15, zeta=0.656, sigma_t=1.54)),
-    # GWTC-5 medians of the "Default BBH" analysis (variance cut 1; popsummary
-    # gwtc5_updated_default_mmax_..._popsummary_result.h5): mu_chi = 0.0633, sigma_chi = 0.365,
-    # zeta (xi_spin) = 0.671, mu_t (mu_spin) = 0.319, sigma_t (sigma_spin) = 1.11
+    # GWTC-5 medians ("Default BBH", variance cut 1; popsummary
+    # gwtc5_updated_default_mmax_..._popsummary_result.h5); zeta = xi_spin, mu_t = mu_spin,
+    # sigma_t = sigma_spin
     "gwtc5_default": (gwtc5_default_spin, dict(mu_chi=0.0633, sigma_chi=0.365, chi_max=1.0,
                                                mu_t=0.319, sigma_t=1.11, zeta=0.671)),
+    # neutron stars: uniform magnitudes on [0, a_max], isotropic tilts (no parameters)
+    "uniform_isotropic": (uniform_isotropic_spin, {}),
 }
-SPIN_MODELS["lvk_default"] = SPIN_MODELS["gwtc3_default"]       # old name (renamed 2026-10-15)
+
 
 
 # ==========================================================
 # Tide models: Lambda(m) of a neutron star, source-frame mass in Msun
 # ==========================================================
-# ✅ Reviewd HZ 10/26/26
-def kappa2T_coefficients(q):
-    """kappa2T = c1 Lambda1 + c2 Lambda2 for q = m2/m1 (LAL NRTidal definition, = 3/16 Lambda-tilde)."""
+
+def kappa_eff_coefficients(q):
+    """kappa_eff = c1 Lambda1 + c2 Lambda2 = 3/16 Lambda-tilde, q = m2/m1 (LAL's Kappa2T)."""
     X1, X2 = 1.0 / (1.0 + q), q / (1.0 + q)
     return ((3.0 / 13.0) * (1.0 + 12.0 * X2 / X1) * X1 ** 5,
             (3.0 / 13.0) * (1.0 + 12.0 * X1 / X2) * X2 ** 5)
 
-# ✅ Reviewd HZ 10/26/26
+
 def eos_lnpoly_lambda(m, p, w=0.0):
     """
     ln Lambda(m) = ln Lambda_14 + b1 ln(m/1.4) + b2 ln(m/1.4)^2  for m <= m_NS_max,
     Lambda = 0 (black hole) above m_NS_max (logistic edge of width w in ln m).
-    b1 ~ -6 reproduces Lambda ∝ m^-6 of realistic EOSs near 1.4 Msun; b2 < 0 for
-    every EOS checked (fits to LAL's SLY, APR4_EPP, WFF1, MPA1, ENG, H4, MS1B on
-    1-2 Msun give b2 = -1.2 ... -4.9): Lambda falls faster than a power law towards
-    the maximum mass.  The default b2 = -3 is a typical value; with b2 = 0 Omega_GW
-    is off by 3-7% at 1 kHz (13-46% at 1.5 kHz) for SLY/H4-like EOSs.
+    b1 ~ -6 gives the Lambda ∝ m^-6 of realistic EOSs near 1.4 Msun.  b2 < 0 for every
+    EOS checked (LAL's SLY, APR4_EPP, WFF1, MPA1, ENG, H4, MS1B on 1-2 Msun: b2 = -1.2 ...
+    -4.9); the default -3 is typical.  b2 = 0 puts Omega_GW off by 3-7% at 1 kHz
+    (13-46% at 1.5 kHz) for SLY/H4-like EOSs.
     """
     lm = jnp.log(m / 1.4)
     lam = jnp.exp(jnp.log(p["Lambda_14"]) + p["b1"] * lm + p["b2"] * lm ** 2)
     return lam * _between(m, hi=p["m_NS_max"], w=w)
 
-# ✅ Reviewd HZ 10/26/26
+
 TIDE_MODELS = {
-    # one deterministic EOS: Lambda is a function of m (no per-star scatter; EOS
-    # uncertainty is common to all stars and belongs in the sampled hyperparameters)
+    # one EOS: Lambda is a function of m (EOS uncertainty is common to all stars and
+    # belongs in the sampled hyperparameters, not in a per-star scatter)
     "eos_lnpoly": (eos_lnpoly_lambda, dict(Lambda_14=400.0, b1=-6.0, b2=-3.0, m_NS_max=2.3)),
 }

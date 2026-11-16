@@ -1,17 +1,11 @@
-# mass_models.py
-# Source-frame mass distributions p(m1, m2), vectorised and normalised.
+# Source-frame mass distributions p(m1, m2), vectorised.
 #
-# Public interface:
 #   get_mass_model(name, **kw)  ->  a MassModelBase instance
 #
-# Every model returns a *normalised* density on the domain m2 <= m1:
-#     int int_{m2 <= m1} p(m1, m2) dm1 dm2 = 1
-# MassModelBase.check_normalisation() verifies this on a fine grid; the
-# tests run it for every registered model.
-#
-# To add a model, subclass MassModelBase, set the bounds M1_MIN, M2_MIN,
-# M_MAX in __init__, implement density(m1, m2) with numpy broadcasting and
-# register it in _REGISTRY.
+# Every model is normalised on m2 <= m1: int int_{m2 <= m1} p dm1 dm2 = 1
+# (check_normalisation(), run by the tests for every registered model).
+# To add a model, subclass MassModelBase, set M1_MIN, M2_MIN, M_MAX in __init__,
+# implement density(m1, m2) with numpy broadcasting and register it in _REGISTRY.
 
 import numpy as np
 from scipy.special import log_ndtr
@@ -206,8 +200,7 @@ class BrokenPowerLawDoubleGaussianModel(MassModelBase):
 class UniformModel(MassModelBase):
     """
     p(m1, m2) = 1/A on  m1_min <= m1 <= m_max,  m2_min <= m2 <= m1,
-    with A the area of that region.  (The MOGWAS version used 1 instead of
-    1/A, i.e. integrated to 1/2 for the defaults.)
+    with A the area of that region.
     """
 
     def __init__(self, m1_min=1.0, m2_min=1.0, m_max=2.0):
@@ -263,8 +256,7 @@ class NSBHModel(MassModelBase):
     """
     p(m1, m2) = 1 / [m1 ln(M_MAX/M1_MIN) (M2_MAX - M2_MIN)]
     on M1_MIN <= m1 <= M_MAX, M2_MIN <= m2 <= M2_MAX (requires M2_MAX <= M1_MIN
-    so that m2 <= m1 everywhere).  (The MOGWAS version divided by the
-    inverse of this normalisation.)
+    so that m2 <= m1 everywhere).
     """
 
     def __init__(self, M1_MIN=3.0, M_MAX=50.0, M2_MIN=1.0, M2_MAX=2.0):
@@ -291,12 +283,8 @@ class NSBHPowerLawGaussianModel(MassModelBase):
       p(m1)     ∝ m1^-alpha_BH  on [m_min_BH, m_max_BH]  (hard edges)
       p(q | m1) = truncated Gaussian(mu_NS, sigma_NS) on
                   [1/m1, min(m_max_NS/m1, 1)]
-    and p(m1, m2) = p(m1) p(q | m1) / m1.
-
-    Formerly 'nsbh_modsmooth', which multiplied p(m1) by GWFAST's polynomial
-    edge filter (sigma_l, sigma_h).  That filter is identically 1 on
-    [m_min_BH, m_max_BH] and is not part of the published model, so it was
-    removed without changing any result.
+    and p(m1, m2) = p(m1) p(q | m1) / m1.  GWFAST's polynomial edge filter
+    (sigma_l, sigma_h) is identically 1 on [m_min_BH, m_max_BH] and is omitted.
     """
 
     DEFAULTS = {"alpha_BH": 2.51, "mu_NS": 0.333, "sigma_NS": 0.54,
@@ -341,11 +329,10 @@ class PowerLawPlusPeakModel(MassModelBase):
                    x taper(m1; m_min, delta_m),  m1 <= m_max
       p(m2 | m1) ∝ m2^beta_q taper(m2; m_min, delta_m),  m2 in [m_min, m1]
     PL ∝ m1^-alpha_m is normalised on [m_min, m_max] and the Gaussian on the
-    real line, so lambda_peak is the fraction in the peak.  p(m2 | m1) is the
-    q^beta_q of the LVK papers, normalised per m1.  gwpopulation's
-    SinglePeakSmoothedMassDistribution (used by popstock) instead truncates the
-    Gaussian to [m_min, 100] and does not cut it at m_max; the two agree when
-    the peak lies well inside [m_min, m_max] (the defaults, close to GWTC-3).
+    real line, so lambda_peak is the fraction in the peak; p(m2 | m1) is the
+    LVK q^beta_q, normalised per m1.  gwpopulation (popstock) truncates the
+    Gaussian to [m_min, 100] instead and does not cut it at m_max; the two
+    agree when the peak lies well inside [m_min, m_max], as for the defaults.
     """
 
     DEFAULTS = {"alpha_m": 3.4, "beta_q": 1.08, "m_min": 5.08, "m_max": 86.85,

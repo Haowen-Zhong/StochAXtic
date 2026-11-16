@@ -15,7 +15,7 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-from jax.scipy.special import erf
+from jax.scipy.special import erf, log_ndtr
 
 from .constants import HUBBLE_TIME, H0_GYR
 from .cosmology import COSMO
@@ -25,7 +25,7 @@ from .mass_models import GWTC5_BPL2G, NSBHPowerLawGaussianModel, PowerLawPlusPea
 # ==========================================================
 # Shape helpers (gradient safe: no nan/inf in masked-out branches)
 # ==========================================================
-
+# ✅ Reviewd HZ 10/23/26
 def planck_taper(m, m_min, delta_m):
     f   = (m - m_min) / delta_m
     fs  = jnp.clip(f, 1e-6, 1.0 - 1e-6)
@@ -33,11 +33,11 @@ def planck_taper(m, m_min, delta_m):
     mid = jax.nn.sigmoid(-arg)        # = 1/(1+e^arg); its gradient stays finite at |arg| = 700
     return jnp.where(f <= 0.0, 0.0, jnp.where(f >= 1.0, 1.0, mid))
 
-
+    # ✅ Reviewd HZ 10/23/26
 def _safe_pow(x, a):
     return jnp.where(x > 0, jnp.where(x > 0, x, 1.0) ** a, 0.0)
 
-
+# ✅ Reviewd HZ 10/23/26
 def interp_uniform(x, x0, dx, table):
     """
     Linear interpolation of `table` sampled at x0 + dx * arange(n), clamped
@@ -51,7 +51,7 @@ def interp_uniform(x, x0, dx, table):
     f = s - i
     return table[i] * (1.0 - f) + table[i + 1] * f
 
-
+# ✅ Reviewd HZ 10/23/26
 def _between(m, lo=None, hi=None, w=0.0):
     """
     Indicator of lo <= m <= hi.  With w > 0 each edge is a logistic step of
@@ -66,7 +66,7 @@ def _between(m, lo=None, hi=None, w=0.0):
             out = out * jnp.where(w > 0, jax.nn.sigmoid(x / ws), (x >= 0).astype(m.dtype))
     return out
 
-
+# ✅ Reviewd HZ 10/26/26
 def _expm1_over_x(x, L):
     """
     expm1(x L) / x, with a series for |x| < 1e-4 so that the value and d/dx
@@ -78,6 +78,23 @@ def _expm1_over_x(x, L):
     return jnp.where(small, L * (1 + x * L / 2 + (x * L) ** 2 / 6), jnp.expm1(xs * L) / xs)
 
 
+def _log_normal_mass(a, b):
+    """
+    log P(a < X < b), X ~ N(0, 1), a < b.  (erf(b/√2) - erf(a/√2))/2 cancels to 0 once
+    a, b < -5.9 (or > 5.9), i.e. when a truncation window lies in a far tail of its Gaussian.
+    """
+    flip = a + b > 0                                     # P(a < X < b) = P(-b < X < -a)
+    lo, hi = jnp.where(flip, -b, a), jnp.where(flip, -a, b)
+    lhi = log_ndtr(hi)
+    return lhi + jnp.log(-jnp.expm1(log_ndtr(lo) - lhi))
+
+
+def _truncnorm_logpdf(x, mu, sig, lo, hi):
+    """log of Normal(mu, sig) truncated to [lo, hi], for x in [lo, hi]."""
+    return (-0.5 * ((x - mu) / sig) ** 2 - jnp.log(sig * jnp.sqrt(2 * jnp.pi))
+            - _log_normal_mass((lo - mu) / sig, (hi - mu) / sig))
+
+
 # ==========================================================
 # Mass models: unnormalised p(m1, m2)
 # ==========================================================
@@ -87,7 +104,7 @@ def _expm1_over_x(x, L):
 _LN_M2_0, _D_LN_M2, _N_M2 = np.log(0.5), np.log(4000.0) / 5999, 6000
 _M2_GRID = np.exp(_LN_M2_0 + _D_LN_M2 * np.arange(_N_M2))
 
-
+# ✅ Reviewd HZ 10/26/26
 def bpl_double_gaussian(m1, m2, p):
     a1, a2, mb = p["alpha_m_1"], p["alpha_m_2"], p["m_break"]
     mmin, mmax = p["m_1_min"], p["m_max"]
@@ -97,9 +114,10 @@ def bpl_double_gaussian(m1, m2, p):
     bpl = jnp.where(m1 < mb, _safe_pow(m1 / mb, -a1), _safe_pow(m1 / mb, -a2)) / bpl_norm
     bpl = bpl * jnp.where(m1 >= mmin, 1.0, 0.0)          # taper(m1) vanishes below mmin anyway
 
-    def gauss(mu, sigma):
-        Z = 0.5 * (1.0 + erf((mu - mmin) / (sigma * jnp.sqrt(2.0))))
-        return jnp.exp(-0.5 * ((m1 - mu) / sigma) ** 2) / (sigma * jnp.sqrt(2 * jnp.pi)) / Z
+    def gauss(mu, sigma):            # N(mu, sigma) on [mmin, inf), in logs: finite when mu lies
+        z = (jnp.maximum(m1, mmin) - mu) / sigma         # many sigma below mmin
+        return jnp.exp(-0.5 * z ** 2 - jnp.log(sigma * jnp.sqrt(2 * jnp.pi))
+                       - log_ndtr((mu - mmin) / sigma))
 
     l1, l2 = p["lambda_peak_1"], p["lambda_peak_2"]
     p1 = (l1 * bpl + l2 * gauss(p["mu_m_1"], p["sigma_m_1"])
@@ -118,42 +136,41 @@ def bpl_double_gaussian(m1, m2, p):
     ok  = (m2 <= m1) & (Z2 > 1e-150)
     return jnp.where(ok, p1 * p_m2(m2) / jnp.where(ok, Z2, 1.0), 0.0)
 
-
+# ✅ Reviewd HZ 10/26/26
 def uniform(m1, m2, p):
     w = p.get("_w", 0.0)
     return (_between(m1, p["m1_min"], p["m_max"], w) * _between(m2, lo=p["m2_min"], w=w)
             * jnp.where(m2 <= m1, 1.0, 0.0))
 
-
+# ✅ Reviewd HZ 10/26/26
 def truncated_powerlaw(m1, m2, p):
     w = p.get("_w", 0.0)
     return (_between(m1, p["m1_min"], p["m_max"], w) * _between(m2, lo=p["m2_min"], w=w)
             * jnp.where(m2 <= m1, _safe_pow(m1 * m2, -p["alpha"]), 0.0))
 
-
+# ✅ Reviewd HZ 10/26/26
 def nsbh(m1, m2, p):
     w = p.get("_w", 0.0)
     return (_between(m1, p["M1_MIN"], p["M_MAX"], w) * _between(m2, p["M2_MIN"], p["M2_MAX"], w)
             * jnp.where(m2 <= m1, 1.0 / m1, 0.0))
 
-
+# ✅ Reviewd HZ 10/26/26
 def nsbh_powerlaw_gaussian(m1, m2, p):
     ns_min = NSBHPowerLawGaussianModel.NS_MIN
     p1 = _safe_pow(m1, -p["alpha_BH"])
-    q  = m2 / m1
     lo = ns_min / m1
     hi = jnp.minimum(p["m_max_NS"] / m1, 1.0)
-    s2 = p["sigma_NS"] * jnp.sqrt(2.0)
-    Z  = 0.5 * (erf((hi - p["mu_NS"]) / s2) - erf((lo - p["mu_NS"]) / s2))
-    pq = (jnp.exp(-0.5 * ((q - p["mu_NS"]) / p["sigma_NS"]) ** 2)
-          / (p["sigma_NS"] * jnp.sqrt(2 * jnp.pi)) / jnp.where(Z > 0, Z, 1.0))
-    # q in [lo, hi] is the same as m2 in [ns_min, m_max_NS] together with q <= 1
+    fits = hi > lo                                       # m1 > ns_min: an NS fits below m1
+    hi = jnp.where(fits, hi, lo + 1.0)
+    # q ~ N(mu_NS, sigma_NS) on [lo, hi]; q is clipped to the window, whose edges are the
+    # (soft) steps in m2 below: q in [lo, hi] is m2 in [ns_min, m_max_NS] with q <= 1
+    pq = jnp.exp(_truncnorm_logpdf(jnp.clip(m2 / m1, lo, hi), p["mu_NS"], p["sigma_NS"], lo, hi))
     w  = p.get("_w", 0.0)
-    ok = (m2 <= m1) & (Z > 0)
+    ok = (m2 <= m1) & fits
     return jnp.where(ok, p1 * pq / m1, 0.0) * (_between(m1, p["m_min_BH"], p["m_max_BH"], w)
                                               * _between(m2, ns_min, p["m_max_NS"], w))
 
-
+# ✅ Reviewd HZ 10/26/26
 def power_law_plus_peak(m1, m2, p):
     # see mass_models.PowerLawPlusPeakModel; p(m2 | m1) normalised as in bpl_double_gaussian
     a, mmin, mmax, lam = p["alpha_m"], p["m_min"], p["m_max"], p["lambda_peak"]
@@ -174,6 +191,7 @@ def power_law_plus_peak(m1, m2, p):
     return jnp.where(ok, p1 * p_m2(m2) / jnp.where(ok, Z2, 1.0), 0.0)
 
 
+# ✅ Reviewd HZ 10/26/26
 MASS_MODELS = {
     "bpl_double_gaussian": (bpl_double_gaussian, dict(GWTC5_BPL2G)),
     "uniform":             (uniform, dict(m1_min=1.0, m2_min=1.0, m_max=2.0)),
@@ -203,6 +221,7 @@ def constant(z, p):
     return p["R0"] * jnp.ones_like(z)
 
 
+# ✅ Reviewd HZ 10/26/26
 class TimeDelayedMadauDickinson:
     """
     Same model and quadrature as cosmology.TimeDelayedMadauDickinsonModel
@@ -265,7 +284,7 @@ RATE_MODELS = {"madau_dickinson": madau_dickinson, "power_law": power_law,
 # The in-plane azimuth difference phi12 is uniform and cancels against the
 # proposal.  Magnitudes live on [0, a_max] (a_max is fixed by FastOmega's
 # spin table, e.g. 1 for BBH, ~0.05 for BNS): a / a_max ~ Beta.
-
+# ✅ Reviewd HZ 10/26/26
 def gwtc3_default_spin(a1, a2, c1, c2, p, a_max=1.0):
     """
     LVK "Default" spin model (GWTC-2/3):
@@ -283,14 +302,14 @@ def gwtc3_default_spin(a1, a2, c1, c2, p, a_max=1.0):
     pt = p["zeta"] * g(c1) * g(c2) + (1.0 - p["zeta"]) / 4.0
     return pa * pt
 
-
+# ✅ Reviewd HZ 10/26/26
 def _truncnorm_pdf(x, mu, sig, lo, hi):
     """Normal(mu, sig) truncated to [lo, hi]."""
-    Z = 0.5 * (erf((hi - mu) / (sig * jnp.sqrt(2.0))) - erf((lo - mu) / (sig * jnp.sqrt(2.0))))
-    g = jnp.exp(-0.5 * ((x - mu) / sig) ** 2) / (sig * jnp.sqrt(2 * jnp.pi)) / Z
+    g = jnp.exp(_truncnorm_logpdf(jnp.clip(x, lo, hi), mu, sig, lo, hi))
     return jnp.where((x >= lo) & (x <= hi), g, 0.0)
 
 
+# ✅ Reviewd HZ 10/26/26
 def gwtc5_default_spin(a1, a2, c1, c2, p, a_max=1.0):
     """
     LVK "Default BBH" spin model of GWTC-4.0/5.0 (arXiv:2605.27226, App. B.4, Eqs. B15-B16):
@@ -307,6 +326,20 @@ def gwtc5_default_spin(a1, a2, c1, c2, p, a_max=1.0):
     return pa * (p["zeta"] * nt(c1) * nt(c2) + (1.0 - p["zeta"]) / 4.0)
 
 
+def low_spin(a1, a2, c1, c2, p, a_max=1.0):
+    """
+    Low-spin model for neutron stars (BNS), no hyperparameters:
+      a_i uniform on [0, a_max]          (iid; a_max = 0.05 is the LVK "low-spin" prior)
+      cos t1, cos t2 uniform on [-1, 1]  (isotropic)
+    The BBH models (gwtc3_default, gwtc5_default) are fits to black holes and do not apply
+    to neutron stars.  On a BNS table (uniform proposal) this is the proposal itself, so
+    every importance weight is equal.
+    """
+    am1, am2 = (a_max, a_max) if np.ndim(a_max) == 0 else a_max      # per-component bounds
+    shape = jnp.broadcast_shapes(*(jnp.shape(v) for v in (a1, a2, c1, c2)))
+    return jnp.full(shape, 0.25 / (am1 * am2))
+
+
 SPIN_MODELS = {
     # GWTC-3 medians of the fiducial analysis (O1-O3, Power Law + Peak, power-law redshift;
     # Zenodo 10.5281/zenodo.5655785): mu_chi = 0.283 and sigma_chi^2 = 0.0299 (mean and variance
@@ -318,21 +351,23 @@ SPIN_MODELS = {
     # zeta (xi_spin) = 0.671, mu_t (mu_spin) = 0.319, sigma_t (sigma_spin) = 1.11
     "gwtc5_default": (gwtc5_default_spin, dict(mu_chi=0.0633, sigma_chi=0.365, chi_max=1.0,
                                                mu_t=0.319, sigma_t=1.11, zeta=0.671)),
+    # neutron stars: uniform magnitudes on [0, a_max], isotropic tilts (no parameters)
+    "low_spin": (low_spin, {}),
 }
-SPIN_MODELS["lvk_default"] = SPIN_MODELS["gwtc3_default"]       # old name (renamed 2026-10-15)
+SPIN_MODELS["lvk_default"] = SPIN_MODELS["gwtc3_default"]       
 
 
 # ==========================================================
 # Tide models: Lambda(m) of a neutron star, source-frame mass in Msun
 # ==========================================================
-
+# ✅ Reviewd HZ 10/26/26
 def kappa2T_coefficients(q):
     """kappa2T = c1 Lambda1 + c2 Lambda2 for q = m2/m1 (LAL NRTidal definition, = 3/16 Lambda-tilde)."""
     X1, X2 = 1.0 / (1.0 + q), q / (1.0 + q)
     return ((3.0 / 13.0) * (1.0 + 12.0 * X2 / X1) * X1 ** 5,
             (3.0 / 13.0) * (1.0 + 12.0 * X1 / X2) * X2 ** 5)
 
-
+# ✅ Reviewd HZ 10/26/26
 def eos_lnpoly_lambda(m, p, w=0.0):
     """
     ln Lambda(m) = ln Lambda_14 + b1 ln(m/1.4) + b2 ln(m/1.4)^2  for m <= m_NS_max,
@@ -347,7 +382,7 @@ def eos_lnpoly_lambda(m, p, w=0.0):
     lam = jnp.exp(jnp.log(p["Lambda_14"]) + p["b1"] * lm + p["b2"] * lm ** 2)
     return lam * _between(m, hi=p["m_NS_max"], w=w)
 
-
+# ✅ Reviewd HZ 10/26/26
 TIDE_MODELS = {
     # one deterministic EOS: Lambda is a function of m (no per-star scatter; EOS
     # uncertainty is common to all stars and belongs in the sampled hyperparameters)

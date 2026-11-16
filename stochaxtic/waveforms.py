@@ -1,14 +1,11 @@
-# waveforms.py
-# Waveform models.  Only the intensity I(f) = |h+|^2 + |hx|^2 of one source
-# at D_REF_MPC = 1 Mpc is needed for Omega_GW.
+# Waveform models: the intensity I(f) = |h+|^2 + |hx|^2 of one source at
+# D_REF_MPC = 1 Mpc.
 #
-# Public interface:
 #   get_waveform_model(name, **kw)  ->  a WaveformModelBase instance
 #
-# Any name that is not in _REGISTRY is treated as a LAL approximant string,
-# e.g. get_waveform_model("IMRPhenomXPHM").  To add a non-LAL model
-# (gwsurrogate, ripple, ...), subclass WaveformModelBase, implement hp_hc()
-# and register it in _REGISTRY.
+# A name not in _REGISTRY is a LAL approximant, e.g. "IMRPhenomXPHM".  To add a
+# non-LAL model (gwsurrogate, ripple, ...), subclass WaveformModelBase, implement
+# hp_hc() and register it in _REGISTRY.
 
 import numpy as np
 
@@ -21,8 +18,8 @@ class WaveformModelBase:
     def hp_hc(self, freqs, m1_det, m2_det, iota, phi_ref, spin1, spin2, f_ref=None):
         """
         Complex frequency-domain polarisations at D_REF_MPC, each (Nf,).
-        m1_det, m2_det are detector-frame masses in Msun; spins are defined
-        at f_ref (None: the model's default rule).
+        Detector-frame masses in Msun; spins defined at f_ref (None: the
+        model's default).
         """
         raise NotImplementedError
 
@@ -37,26 +34,27 @@ class LALWaveform(WaveformModelBase):
     """
     Any lalsimulation approximant.
 
-    mode = "sequence": SimInspiralChooseFDWaveformSequence evaluated exactly
-                       on `freqs`.  Fastest; IMRPhenom family and SEOBNR ROMs.
-    mode = "fd":       SimInspiralFD on a uniform grid, then picked at
-                       `freqs`.  Also handles time-domain models (NRSur7dq4,
-                       SEOBNRv4PHM, ...); LAL's conditioning tapers the
-                       lowest few Hz above f_min.  `freqs` must be a
-                       subset of a 2^-k Hz grid.
+    mode = "sequence": SimInspiralChooseFDWaveformSequence, evaluated exactly
+                       on `freqs` (IMRPhenom family, SEOBNR ROMs); IMRPhenomPv3/
+                       Pv3HM through their own LAL functions (orientation.
+                       DIRECT_MODELS).  Their MSA precession angles are refused
+                       for ~0.07% of isotropic spins (RuntimeError); orientation
+                       averages use the co-precessing modes and never fail.
+    mode = "fd":       SimInspiralFD on a uniform grid, picked at `freqs`; also
+                       time-domain models (NRSur7dq4, SEOBNRv4PHM, ...).  LAL's
+                       conditioning tapers the lowest few Hz above f_min.
+                       `freqs` must lie on a 2^-k Hz grid.
 
-    isco_cut: if set, zero the waveform at f > isco_cut * 4400/M_det Hz
-    (isco_cut=3 reproduces the MOGWAS per-frequency code; it removes most of
-    the merger-ringdown).  Default None keeps the full waveform.
+    isco_cut: zero the waveform at f > isco_cut * 4400/M_det Hz (isco_cut=3
+    reproduces MOGWAS and removes most of the merger-ringdown).  Default None.
 
-    f_ref is lowered to half the rough ISCO frequency for very heavy systems
-    so that it stays below merger.  With zero spins this only shifts the
-    phase and leaves I(f) unchanged.
+    For very heavy systems f_ref is lowered to half the rough ISCO frequency so
+    that it stays below merger; with zero spins this only shifts the phase.
     """
 
     def __init__(self, approximant, mode="sequence", f_ref=20.0,
                  delta_f=0.0, lal_params=None, isco_cut=None):
-        from .orientation import ensure_lal_data_path
+        from .orientation import ensure_lal_data_path, DIRECT_MODELS, direct_fd_waveform
         ensure_lal_data_path()                     # ROM data (SEOBNRv5*_ROM)
         import lal
         import lalsimulation as lalsim
@@ -72,6 +70,7 @@ class LALWaveform(WaveformModelBase):
         self.lal_params  = lal_params
         self.isco_cut    = isco_cut
         self._seq_cache  = (None, None)
+        self._direct     = direct_fd_waveform if approximant in DIRECT_MODELS else None
 
     def _freq_sequence(self, freqs):
         key = freqs.tobytes()
@@ -87,9 +86,8 @@ class LALWaveform(WaveformModelBase):
         m_tot  = m1_det + m2_det
         f_isco = 4400.0 / m_tot                         # rough ISCO estimate
 
-        # whole band far beyond the end of any IMR model (M f > 1; PhenomX
-        # stops at M f = 0.3).  A "few x f_isco" cut here would remove real
-        # merger-ringdown signal.
+        # whole band beyond the end of any IMR model (M f > 1; PhenomX stops at
+        # M f = 0.3).  A "few x f_isco" cut would remove real merger-ringdown.
         if freqs[0] * m_tot * lal.MTSUN_SI > 1.0:
             z = np.zeros(len(freqs), dtype=complex)
             return z, z.copy()
@@ -100,6 +98,9 @@ class LALWaveform(WaveformModelBase):
 
         if self.mode == "sequence":
             def call(fs):
+                if self._direct is not None:
+                    return self._direct(self.name, fs, m1_det * lal.MSUN_SI, m2_det * lal.MSUN_SI,
+                                        spin1, spin2, dist, iota, phi_ref, f_ref, self.lal_params)
                 hp, hc = lalsim.SimInspiralChooseFDWaveformSequence(
                     phi_ref, m1_det * lal.MSUN_SI, m2_det * lal.MSUN_SI,
                     *spin1, *spin2, f_ref, dist, iota,
@@ -108,12 +109,10 @@ class LALWaveform(WaveformModelBase):
             try:
                 hp, hc = call(freqs)
             except RuntimeError:
-                # Some models refuse a sequence whose first point (taken as
-                # f_min) lies beyond their end frequency: IMRPhenomXPHM raises
-                # for M f > 0.3, while XAS returns zeros and XHM a negligible
-                # tail.  The sequence interface evaluates each frequency
-                # independently, so prepend M f = 0.05 to pass LAL's check and
-                # drop it: the requested values are LAL's own.
+                # Some models refuse a sequence whose first point (taken as f_min) is
+                # beyond their end frequency (IMRPhenomXPHM for M f > 0.3).  Each
+                # frequency is evaluated independently, so prepend M f = 0.05 to pass
+                # the check and drop it.
                 if freqs[0] * m_tot * lal.MTSUN_SI < 0.1:
                     raise
                 hp, hc = call(np.concatenate(([0.05 / (m_tot * lal.MTSUN_SI)], freqs)))

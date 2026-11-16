@@ -1,4 +1,4 @@
-# Command-line interface.
+# Command-line interface to the Monte Carlo integrator.
 #
 #   python -m stochaxtic run   out.npz [options]
 #   python -m stochaxtic merge out.npz part1.npz part2.npz ...
@@ -13,7 +13,6 @@ import os
 import sys
 
 import numpy as np
-
 from .integrator import OmegaIntegrator, OmegaResult
 
 
@@ -44,7 +43,7 @@ def _parser():
     r.add_argument("--n-rep", type=int, default=8)
     r.add_argument("--rep-start", type=int, default=0)
     r.add_argument("--log2-points", type=int, default=12)
-    r.add_argument("--seed", type=int, default=20260929)
+    r.add_argument("--seed", type=int, default=20261126)
     r.add_argument("--antithetic", action="store_true")
     r.add_argument("--n-proc", type=int, default=1)
 

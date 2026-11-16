@@ -1,30 +1,26 @@
-# fast_omega.py
-# Differentiable, jit-able Omega_GW(f; Lambda) for MCMC with numpyro, with
-# optional spins (aligned or precessing) and tides.
+# Differentiable, jit-able Omega_GW(f; Lambda) for MCMC with numpyro, with optional
+# spins (aligned or precessing) and tides.
 #
 #   fo    = FastOmega(freqs, waveform="IMRPhenomXPHM", spins="precessing")
 #   omega = fo.make("bpl_double_gaussian", "madau_dickinson")
 #   omega(mass_params, rate_params, spin_params)                  # ~ms, (Nf,)
 #
-# Method (see paper).  In GR the intensity of a source
-# with dimensionless intrinsic parameters theta (q, spins at a fixed
-# dimensionless reference frequency, tidal deformabilities) scales as
-#     I(f; M, theta) = M^4 J(M f; theta)          
-# J is tabulated once per waveform model as "columns": q nodes x tide nodes
-# (kappa_eff^T, and for NRTidalv3 the split of kappa_eff^T between the stars) x spin
-# samples (Sobol, per q node), each column averaged exactly over the observer
-# direction (orientation.py), and compressed by an SVD streamed from disk,
-# J(x; col) ≈ sum_r B_r(x) C_r(col).  Per call only weights change:
+# In GR the intensity of a source with dimensionless parameters theta (q, spins at a
+# fixed dimensionless reference frequency, tidal deformabilities) scales as
+#     I(f; M, theta) = M^4 J(M f; theta).
+# J is tabulated once per waveform model as columns: q nodes x tide nodes (kappa_eff^T,
+# and for NRTidalv3 its split between the stars) x spin samples (Sobol, per q node),
+# each averaged exactly over the observer direction (orientation.py), and compressed by
+# an SVD streamed from disk, J(x; col) ≈ sum_r B_r(x) C_r(col).  Per call only weights
+# change:
 #   spins: self-normalised importance weights p(s | Lambda_s) / g(s) per q node
-#   tides: Lambda(m) from an EOS model on the source-frame mass grid (one
-#          deterministic EOS), interpolated between the tide nodes
-# giving P_r(l) = sum_{q,t} P(l, q) W(l, q, t) Cbar_r(q, t).  The
-# redshift integral is then an FFT convolution in ln M and the frequency
-# dependence an FFT cross-correlation in ln f, exactly as without spins.
+#   tides: Lambda(m) of one EOS on the source-frame mass grid, interpolated between
+#          the tide nodes
+# giving P_r(l) = sum_{q,t} P(l, q) W(l, q, t) Cbar_r(q, t).  The redshift integral is
+# an FFT convolution in ln M, the frequency dependence an FFT cross-correlation in ln f.
 #
-# Requirements: float64 in jax; the (M, q) grid must contain the population
-# support for every Lambda of the prior; spin magnitudes live in [0, a_max]
-# and kappa_eff^T in [0, kappa_max].
+# Requirements: float64 in jax; the (M, q) grid contains the population for every
+# Lambda of the prior; spin magnitudes in [0, a_max], kappa_eff^T in [0, kappa_max].
 
 import hashlib
 import os
@@ -55,7 +51,7 @@ A_PRE = 7.0 / 3.0
 
 # Omega below this fraction of its peak is set to zero.  There (above the last ringdown: from
 # ~3 kHz for the default BBH, ~1 kHz for heavy high-z ones, ~8 kHz for NSBH) the FFTs leave
-# only round-off, <~ 4e-16 of the peak with either sign (2026-10-26, 900 prior draws)
+# only round-off
 OMEGA_REL_CUT = 1e-12
 
 # sub-samples per ln M cell: 1 suffices for smooth (tapered) mass models;
@@ -63,17 +59,14 @@ OMEGA_REL_CUT = 1e-12
 DEFAULT_N_SUB = {"bpl_double_gaussian": 1}
 
 # Proposal densities of the spin magnitudes x = a / a_max on [0, 1] (tilts and azimuths are
-# always uniform).  The "defensive" proposals mix a uniform part alpha (it bounds the importance
-# weights by 1 / alpha for any population) with a shape h close to a measured BBH population:
+# uniform).  The defensive proposals mix a uniform part alpha (importance weights <= 1 / alpha
+# for any population) with a shape h close to a measured BBH population:
 #   defensive_gwtc3       h = Beta(1.5, 4)                ~ gwtc3_default (Beta(1.64, 4.15))
-#   defensive_gwtc5       h = N(0.15, 0.32) on [0, 1]     provisional gwtc5_default magnitudes
-#                                                         (the defaults until 2026-10-18)
+#   defensive_gwtc5       h = N(0.15, 0.32) on [0, 1]     ~ GWTC-5 magnitudes
 #   defensive_gwtc5_wide  h = N(0.15, 0.45) on [0, 1]     wider, for priors around gwtc5
-# The shapes are in x = a / a_max, i.e. meant for a_max = 1 (BBH, NSBH); for BNS (a_max ~ 0.05)
-# use "uniform".  Seed scatter of Omega (BBH, XPHM precessing, 128 samples per q node, 100 Hz):
-# gwtc3_default 7.0e-4 (uniform) -> 2.9e-4 (defensive_gwtc3); gwtc5_default 4.0e-4 -> 4.9e-4
-# (examples/spin_proposal_test.py); defensive_gwtc5 / _wide: gwtc5_default 1.9e-4, gwtc3_default
-# 4.2e-4 / 5.2e-4.  "auto" (the default) uses defensive_gwtc5_wide for a_max >= 0.5.
+# The shapes are meant for a_max = 1 (BBH, NSBH); for BNS (a_max ~ 0.05) use "uniform".
+# Seed scatter of Omega (BBH, XPHM precessing, 128 samples per q node, 100 Hz;
+# "auto" (the default) uses defensive_gwtc5_wide for a_max >= 0.5, "uniform" otherwise.
 SPIN_PROPOSALS = {
     "uniform": None,
     "defensive_gwtc3": dict(alpha=0.3, beta=(1.5, 4.0)),
@@ -81,7 +74,7 @@ SPIN_PROPOSALS = {
     "defensive_gwtc5_wide": dict(alpha=0.3, truncnorm=(0.15, 0.45)),
 }
 
-# ✅ Reviewd HZ 10/22/26
+
 def _magnitude_proposal(name):
     """(inverse CDF, density) of x = a / a_max on [0, 1] for a spin proposal."""
     p = SPIN_PROPOSALS[name]
@@ -100,35 +93,31 @@ def _magnitude_proposal(name):
 
 # How kappa_eff is shared between the stars.  For Omega_GW (|h|^2 only) an NRTidal model depends
 # on two tidal numbers: the amplitude correction on kappa_eff = c1 Lambda1 + c2 Lambda2 = 3/16
-# Lambda-tilde (the kappa2T of LAL and of this module), and the merger frequency, where the
-# waveform is tapered.  NRTidalv2 takes the merger frequency from kappa_eff as well; NRTidalv3
-# from the Damour-Nagar coupling 3 (X2 X1^4 Lambda1 + X1 X2^4 Lambda2) (arXiv:2311.07456, Eqs. 29,
-# 40, 43), a different combination unless m1 = m2.  Its tables therefore get a second tidal axis,
-# the share w = c1 Lambda1 / kappa_eff of the heavier star, on which the Damour-Nagar coupling is
-# linear.  For one EOS Lambda(m) decreases with m, so Lambda1 <= Lambda2 and
-#     0 <= w <= w0(q) = c1 / (c1 + c2):
-# w = 0 when the heavier star has Lambda1 = 0 (at or above the maximum NS mass), w = w0 when
-# Lambda1 = Lambda2.  The nodes are SPLIT_FRACTIONS of w0, interpolated cubically in w: the whole
-# physical range is covered by interpolation, for any EOS (|dOmega/Omega| < 5e-8 below 2 kHz for
-# eight EOSs and three BNS populations against each star's own Lambda; 3 nodes on q^2, q^6, q^12
-# needed extrapolation and gave 3e-7, a single q^6 split 3e-3; examples/v3_two_kappa_test.py).
-# Other models use the single split Lambda1 / Lambda2 = q^6 (exact for NRTidalv2, < 1e-13).
-SPLIT_MODELS = {"IMRPhenomXAS_NRTidalv3", "IMRPhenomXP_NRTidalv3"}
+# Lambda-tilde, and the merger frequency, where the waveform is tapered.  NRTidalv2 takes the
+# merger frequency from kappa_eff as well; NRTidalv3 from the Damour-Nagar coupling kappa_2^T =
+# 3 (X2 X1^4 Lambda1 + X1 X2^4 Lambda2) (arXiv:2311.07456, Eqs. 29, 40, 43), a different
+# combination unless m1 = m2.  Its tables get a second tidal axis, the share w = c1 Lambda1 /
+# kappa_eff of the heavier star, on which that coupling is linear.  For one EOS Lambda(m)
+# decreases with m, so
+#     0 <= w <= w0(q) = c1 / (c1 + c2)
+# (w = 0: the heavier star is at or above the maximum NS mass; w = w0: Lambda1 = Lambda2).  The
+# nodes are SPLIT_FRACTIONS of w0, interpolated cubically in w, so every EOS is interpolated.
+SPLIT_MODELS = {"IMRPhenomXAS_NRTidalv3", "IMRPhenomXP_NRTidalv3", "SEOBNRv5_ROM_NRTidalv3"}
 SPLIT_FRACTIONS = (0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0)
 
-# ✅ Reviewd HZ 10/22/26
+
 def _split_nodes(q, fractions=None):
     """
     w = c1 Lambda1 / kappa_eff of the split nodes, (len(q), n): the fractions of w0 = c1/(c1 + c2)
     (SPLIT_MODELS), or (fractions None) the single split Lambda1 / Lambda2 = q^6.
     """
     q = np.atleast_1d(np.asarray(q, dtype=float))[:, None]
-    c1, c2 = jp.kappa2T_coefficients(q)
+    c1, c2 = jp.kappa_eff_coefficients(q)
     if fractions is None:
         return c1 * q ** 6 / (c1 * q ** 6 + c2)
     return np.asarray(fractions, dtype=float)[None, :] * c1 / (c1 + c2)
 
-# ✅ Reviewd HZ 10/22/26
+
 def _streaming_svd(table, colw, rank, rank_tol, chunk_bytes=2 ** 28):
     """
     Truncated SVD of A = diag(1/s) J diag(colw), J (n_x, n_col) given as `table` (n_col, n_x)
@@ -152,15 +141,15 @@ def _streaming_svd(table, colw, rank, rank_tol, chunk_bytes=2 ** 28):
     sx = np.sqrt(s2 / n_col)
     inv = np.where(sx > 0, 1.0 / np.where(sx > 0, sx, 1.0), 0.0)
     rows = lambda c: np.asarray(table[c]) * inv[None, :] * colw[c, None]     # A^T, chunk c
-    R = np.zeros((0, n_x)) # 一开始是空的，我们只知道n_x，后续会不断增加行数
-    for c in chunks:
-        R = np.linalg.qr(np.vstack([R, rows(c)]), mode="r") # 一块儿一块儿做，因为内存有限。每一块儿都包含了之前的R和当前的rows(c)，然后做QR分解，得到新的R
-    u, sv, _ = np.linalg.svd(R.T, full_matrices=False) # 对R^T做SVD分解，得到左奇异向量u，奇异值sv，右奇异向量（这里不需要）
+    R = np.zeros((0, n_x))
+    for c in chunks:                                     # TSQR: R of [R; A^T chunk]
+        R = np.linalg.qr(np.vstack([R, rows(c)]), mode="r")
+    u, sv, _ = np.linalg.svd(R.T, full_matrices=False)   # singular values / left vectors of A
     if rank is None:
         # Omega's truncation error is ~0.03-0.1 x rank_tol (measured)
-        rank = int(min(96, max(1, np.sum(sv / sv[0] > rank_tol)))) # 计算rank，取小于96的最大值，保证奇异值的比例大于rank_tol
+        rank = int(min(96, max(1, np.sum(sv / sv[0] > rank_tol))))
     rank = int(min(rank, np.sum(sv > 0)))                                    # <= n_columns
-    U = u[:, :rank] # 取前rank个左奇异向量
+    U = u[:, :rank]
     vt = np.empty((rank, n_col))
     for c in chunks:
         vt[:, c] = (rows(c) @ U).T / sv[:rank, None]
@@ -217,6 +206,17 @@ def _cache_path(cache_dir, prefix, waveform, key):
     return os.path.join(os.path.expanduser(cache_dir), f"{prefix}_{waveform}_{h}.npz")
 
 
+def _lal_versions():
+    """Versions of LAL and LALSimulation, part of the table key: the cached tables are their
+    waveforms, so a LALSuite upgrade must not reuse tables built with an older one."""
+    try:
+        import lal
+        import lalsimulation
+    except ImportError:
+        return "unavailable"
+    return f"lal {lal.__version__}, lalsimulation {lalsimulation.__version__}"
+
+
 def _init_table_worker(waveform, rule):
     global _AVG
     _AVG = OrientationAverager(waveform, rule)
@@ -226,8 +226,8 @@ def _table_column(task):
     """task = (f, f_ref, m_ref, q, spin 6-vector, aligned, lambdas or None) -> (n_kappa, n_f)."""
     f, f_ref, m_ref, q, s, aligned, lambdas = task
     a1, a2, c1, c2, p1, p12 = s
-    # IMRPhenomXP/XPHM jump at exactly m1 == m2 (+10% at merger, x18 in the
-    # ringdown tail, while XAS/XHM are continuous): evaluate the q -> 1 limit
+    # IMRPhenomXP/XPHM jump at exactly m1 == m2 (+10% at merger, x18 in the ringdown
+    # tail; XAS/XHM are continuous): evaluate the q -> 1 limit
     q = min(q, 1.0 - 1e-6)
     m1, m2 = m_ref / (1 + q), m_ref * q / (1 + q)
     # aligned: keep only the projections a cos t on L (in-plane components dropped)
@@ -247,9 +247,12 @@ class FastOmega:
     """
     freqs          frequencies of the output (default 5..1000 Hz, 1 Hz)
     waveform       LAL approximant.  Precessing spins need a precessing model
-                   (IMRPhenomXPHM, IMRPhenomXP, IMRPhenomXP_NRTidalv2/v3), tides
-                   an NRTidal model (IMRPhenomXP_NRTidalv2/v3, IMRPhenomXAS_NRTidalv2/v3;
-                   NRTidalv3 tables have a second tidal axis, see SPLIT_MODELS)
+                   (IMRPhenomXPHM, IMRPhenomXP, IMRPhenomXP_NRTidalv2/v3,
+                   IMRPhenomPv2/Pv3/Pv3HM; Pv3/Pv3HM columns use their co-precessing modes,
+                   no MSA angles, see orientation.py 4)), tides
+                   an NRTidal model (IMRPhenomXP_NRTidalv2/v3, IMRPhenomXAS_NRTidalv2/v3,
+                   SEOBNRv5_ROM_NRTidalv3; NRTidalv3 tables have a second tidal axis, see
+                   SPLIT_MODELS)
                    or IMRPhenomNSBH (aligned spins; Lambda1 ignored;
                    needs q_min >= 0.01, m_ref <= 6 and Lambda_NS <= 5000, see check_tides)
     spins          None, "aligned" or "precessing"
@@ -260,12 +263,10 @@ class FastOmega:
     z_min, z_max   redshift range of the integral
     delta          spacing of the ln M, ln(1+z) and ln f grids
     n_q            points of the ln q grid (Simpson: made odd)
-    q_rule         quadrature in ln q on [ln q_min, 0]: "simpson" (default),
-                   "gauss" (Gauss-Legendre) or "trapezoid".  For populations
-                   smooth in q (e.g. bpl_double_gaussian) "gauss" reaches 1e-5
-                   at n_q ~ 31 where Simpson needs ~121 (4x fewer table
-                   columns); with hard q edges (uniform, nsbh) every rule is
-                   O(1/n_q) and none is clearly better
+    q_rule         quadrature in ln q on [ln q_min, 0]: "simpson" (default), "gauss"
+                   (Gauss-Legendre) or "trapezoid".  For populations smooth in q "gauss"
+                   reaches 1e-5 at n_q ~ 31, Simpson at ~121; with hard q edges (uniform,
+                   nsbh) every rule is O(1/n_q)
     n_spin         Sobol spin samples per q node (spins != None); narrow spin
                    populations need more (see check_spins)
     a_max          spin magnitudes live in [0, a_max] (use ~0.05 for BNS); a pair (a1_max, a2_max)
@@ -274,47 +275,38 @@ class FastOmega:
     x_ref          spins are defined at f_ref = x_ref / (M T_sun), i.e. at a
                    fixed M f (default 0.005, i.e. 20 Hz for M ~ 50 Msun; with
                    tides 3e-4, i.e. 20 Hz for M ~ 3 Msun)
-    kappa_min, kappa_max, n_kappa   kappa2T grid (tides): 0 plus n_kappa-1 nodes
-                   log-spaced on [kappa_min, kappa_max].  NRTidal tapers the
-                   waveform at a kappa-dependent merger frequency, so J is very
-                   non-linear in kappa (a uniform grid overestimates the
-                   high-frequency power) but smooth in ln kappa.
-                   kappa2T = 3/16 Lambda-tilde: ~10-400 for BNS, O(1) for NSBH.
-                   Defaults: [0.1, 3000], 24 nodes (NRTidal); [0.01, 300], 48
-                   nodes (IMRPhenomNSBH, whose disruption makes J non-linear over
-                   kappa ~ 0.3-15; 24 nodes there bias Omega(1 kHz) by -0.7%)
-    kappa_interp   interpolation of the table between the kappa nodes:
-                   "cubic" (default: 4-point Lagrange in ln kappa; linear in kappa
-                   below the first log node) or "linear" (in kappa, the two
-                   neighbouring nodes).  BNS, 24 nodes: |dOmega/Omega| <= 5e-5
-                   below 1 kHz with "cubic", 1.4e-2 at 1 kHz with "linear"
-                   (examples/kappa_interp_test.py).  Not part of the table.
+    kappa_min, kappa_max, n_kappa   kappa_eff grid (tides): 0 plus n_kappa-1 nodes log-spaced
+                   on [kappa_min, kappa_max].  NRTidal tapers the waveform at a kappa-dependent
+                   merger frequency, so J is very non-linear in kappa but smooth in ln kappa.
+                   kappa_eff = 3/16 Lambda-tilde: ~10-400 for BNS, O(1) for NSBH.  Defaults:
+                   [0.1, 3000], 24 nodes (NRTidal); [0.01, 300], 48 nodes (IMRPhenomNSBH, whose
+                   disruption makes J non-linear over kappa ~ 0.3-15
+    kappa_interp   interpolation between the kappa nodes: "cubic" (default; 4-point Lagrange in
+                   ln kappa, linear in kappa below the first log node) or "linear" (in kappa).
+                   BNS, 24 nodes: |dOmega/Omega| <= 5e-5 below 1 kHz ("cubic"), 1.4e-2 at 1 kHz.
+                   Not part of the table.
     n_split        nodes of the split axis of SPLIT_MODELS (NRTidalv3): the share w of the primary
-                   in kappa2T, uniform on its physical range [0, w0(q)], interpolated with
-                   Lagrange polynomials of degree n_split - 1 (default 4, SPLIT_FRACTIONS;
-                   n_split = 7 halves the intervals and contains the default nodes)
+                   in kappa_eff, uniform on [0, w0(q)], Lagrange interpolation of degree n_split - 1
+                   (default 4, SPLIT_FRACTIONS; 7 halves the intervals and keeps the default nodes)
     table_step     the J table is computed on an ln x grid table_step * delta
                    apart and its SVD basis interpolated to the delta grid
-    rank           SVD rank of the table; None picks the smallest rank with
-                   sigma_r / sigma_1 < rank_tol (at most 96; rank_tol 1e-4 keeps
-                   the truncation error of Omega at ~0.03-0.1 rank_tol); never
-                   more than the number of table columns
+    rank           SVD rank of the table; None picks the smallest rank with sigma_r / sigma_1 <
+                   rank_tol (at most 96, and at most the number of columns)
     orientation_rule  see orientation.OrientationAverager (None: exact default)
     m_ref          total mass at which the table is generated (default 20,
                    2.8 with tides)
     n_proc         processes for building the table
-    cache_dir      the table (a memory-mapped .npy, read with table()) and its truncated
-                   SVD are cached here (None: the table goes to a temporary file, deleted
-                   after the SVD).  The table is written column by column and decomposed
-                   chunk by chunk (_streaming_svd), so the memory needed does not grow with
-                   the number of columns; only the disk space does (8 n_columns n_xJ bytes)
+    cache_dir      the table (a memory-mapped .npy, read with table()) and its truncated SVD
+                   are cached here (None: the table goes to a temporary file, deleted after the
+                   SVD).  Written column by column and decomposed chunk by chunk, so memory does
+                   not grow with the number of columns; disk space does (8 n_columns n_xJ bytes)
     seed           seed of the spin samples
-    spin_proposal  distribution of the spin-magnitude samples: "uniform" on [0, a_max] or a
-                   defensive mixture shaped like a population (SPIN_PROPOSALS:
-                   "defensive_gwtc3", "defensive_gwtc5", "defensive_gwtc5_wide"; importance
-                   weights bounded by 1/alpha; for a_max = 1); part of the table.  Default
-                   "auto": "defensive_gwtc5_wide" for a_max >= 0.5 (BBH, NSBH; halves the spin
-                   Monte Carlo error for gwtc5_default), "uniform" otherwise (BNS)
+    spin_proposal  distribution of the spin-magnitude samples (part of the table): "uniform" on
+                   [0, a_max] or a defensive mixture of SPIN_PROPOSALS.  Default "auto":
+                   "defensive_gwtc5_wide" for a_max >= 0.5 (BBH, NSBH; halves the spin Monte
+                   Carlo error for gwtc5_default), "uniform" otherwise (BNS).  The default spin
+                   population (self.spin_model) follows the same rule: "gwtc5_default" for
+                   a_max >= 0.5, "uniform_isotropic" otherwise
     """
 
     def __init__(self, freqs=None, waveform="IMRPhenomXAS", spins=None, tides=False,
@@ -358,6 +350,8 @@ class FastOmega:
         if spin_proposal not in SPIN_PROPOSALS:
             raise ValueError(f"spin_proposal must be 'auto' or one of {list(SPIN_PROPOSALS)}")
         self.spin_proposal = spin_proposal
+        # default spin_model of omega, make, check_spins and table_intensity, same rule
+        self.spin_model = "gwtc5_default" if self._amax[0] >= 0.5 else "uniform_isotropic"
         x_ref  = x_ref if x_ref is not None else (3e-4 if tides else 0.005)
         m_ref  = m_ref if m_ref is not None else (2.8 if tides else 20.0)
         if waveform in NSBH_MODELS:                        # the table must stay in the model's domain
@@ -391,8 +385,7 @@ class FastOmega:
         self.ln_x = np.log(T_SUN) + self.l_det[0] + lnf0 + d * np.arange(n_x)
 
         # ---- the intensity table: columns (q, tide node, spin sample) ----
-        # tide nodes: kappa_eff nodes x split nodes (kappa major); one split node except
-        # for SPLIT_MODELS, none (a single node) without tides
+        # tide nodes: kappa_eff nodes x split nodes (kappa major); a single node without tides
         n_s = n_spin if spins else 1
         kd = (0.01, 300.0, 48) if waveform in NSBH_MODELS else (0.1, 3000.0, 24)
         kappa_min, kappa_max, n_kappa = (v if v is not None else dv
@@ -415,12 +408,14 @@ class FastOmega:
         dJ = table_step * d
         lx_hi = min(self.ln_x[-1], 0.0)                                    # every model ends by M f = 1
         self.ln_xJ = np.arange(self.ln_x[0] - 2 * dJ, lx_hi + 2 * dJ, dJ)
-        tkey = dict(table_version=2, spins=spins, tides=self.tides, n_s=n_s, seed=seed, a_max=self.a_max,
+        # cache key of the table.  table_version: bump when a code change alters the columns
+        # for the same key; lal_version: a LALSuite upgrade can change the waveforms
+        tkey = dict(table_version=2, lal_version=_lal_versions(),
+                    spins=spins, tides=self.tides, n_s=n_s, seed=seed, a_max=self.a_max,
                     kappa=self.kappa.tolist(), x_ref=x_ref, m_ref=m_ref, lq=self.lq.tolist(),
                     lxJ=[self.ln_xJ[0], dJ, len(self.ln_xJ)], rule=str(orientation_rule),
-                    # precessing tables before phi1 was sampled (spin 1 in the x-z plane) are not reused
+                    # phi1, lambda_split: keep tables of older layouts from being reused
                     **({"phi1": "uniform"} if spins == "precessing" else {}),
-                    # NRTidal tables before Lambda1 / Lambda2 = q^6 (Lambda1 = Lambda2) are not reused
                     **({"lambda_split": "q6" if self.split_fractions is None
                         else {"w0_fractions": list(self.split_fractions)}} if nrtidal else {}),
                     **({"spin_proposal": spin_proposal} if spins and spin_proposal != "uniform" else {}))
@@ -428,10 +423,10 @@ class FastOmega:
         self._cache = (cache_dir, waveform, tkey)
 
         # ---- truncated SVD of the table (cached) ----
-        # The SVD cache holds the row scale, the singular values and the first `rank`
-        # left/right singular vectors (~0.1 GB for the largest tables).  Its key adds the
-        # column weights and the truncation settings to the table key.  The decomposition
-        # streams the table from disk (_streaming_svd): ~1 GB of memory for any table.
+        # The SVD cache holds the row scale, the singular values and the first `rank` singular
+        # vectors (~0.1 GB for the largest tables); its key adds the column weights and the
+        # truncation settings to the table key.  The decomposition streams the table from
+        # disk: ~1 GB of memory for any table.
         svd_file = _cache_path(cache_dir, "svd", waveform,
                                dict(tkey, svd_version=1, wq=self.wq.tolist(), rank=rank, rank_tol=rank_tol))
         if svd_file and os.path.exists(svd_file):
@@ -457,20 +452,19 @@ class FastOmega:
             if svd_file:
                 os.makedirs(os.path.dirname(svd_file), exist_ok=True)
                 np.savez(svd_file, sx=sx, sv=sv, B=B, vt=vt_r)
-        B, vt_r = _fix_signs(B, vt_r)                                       # also for older caches
+        B, vt_r = _fix_signs(B, vt_r)                                       # loaded caches too
         self._sv = sv / sv[0]
         vt_r /= colw[None, :]                                              # C (rank, n_col), in place
-        # stored q-major, (n_q, rank * n_t, n_s): the spin average is then a batched mat-vec that
-        # XLA computes without transposing C (~30% less memory when a jit captures it)
+        # q-major (n_q, rank * n_t, n_s): the spin average is a batched mat-vec that XLA
+        # computes without transposing C (~30% less memory when a jit captures it)
         coef = np.ascontiguousarray(vt_r.reshape(rank, n_q, n_t, n_s).transpose(1, 0, 2, 3)
                                     ).reshape(n_q, rank * n_t, n_s)
         del vt_r
         live = sx > 0
         xe   = self.ln_xJ[live][-1]                                        # last live table node
         spl  = CubicSpline(self.ln_xJ, B, axis=0)
-        # the row scale spans tens of decades: interpolate ln s, with a cubic
-        # spline on the live nodes (linear interpolation of ln s biased Omega
-        # by ~-4e-4 at 1 kHz, from the curvature of ln s near merger)
+        # the row scale spans tens of decades: cubic spline of ln s on the live nodes
+        # (linear interpolation biases Omega by ~-4e-4 at 1 kHz: ln s is curved near merger)
         spl_s = CubicSpline(self.ln_xJ[live], np.log(sx[live]))
         ok   = self.ln_x <= xe
         s_f  = np.zeros(len(self.ln_x))
@@ -509,7 +503,7 @@ class FastOmega:
             M = np.exp(self.l_src)[:, None]
             q = np.exp(self.lq)[None, :]
             self._m1c, self._m2c = jnp.asarray(M / (1 + q)), jnp.asarray(M * q / (1 + q))
-            c1, c2 = jp.kappa2T_coefficients(np.exp(self.lq))
+            c1, c2 = jp.kappa_eff_coefficients(np.exp(self.lq))
             self._kc1, self._kc2 = jnp.asarray(c1)[None, :], jnp.asarray(c2)[None, :]
             self._lk0, self._dlk = np.log(self.kappa[1]), np.log(self.kappa[2] / self.kappa[1])
             if n_w > 1:
@@ -532,11 +526,11 @@ class FastOmega:
     def _draw_spins(self, n_q, n_s, seed):
         """
         (n_q, n_s, 6) = a1, a2, cos t1, cos t2, phi1, phi12; one Sobol scrambling per q node.
-        phi1 (azimuth of spin 1's in-plane part relative to the orbital separation at
-        f_ref) and phi12 are uniform; both cancel against the uniform azimuths of the
-        spin models.  For orbit-averaged precession (IMRPhenomX(P)HM, XP_NRTidalv2) the
-        table does not depend on phi1, but other models may.  The magnitudes follow the
-        spin_proposal (inverse CDF of the scrambled Sobol coordinate); the tilts are uniform.
+        phi1 (azimuth of spin 1's in-plane part relative to the orbital separation at f_ref)
+        and phi12 are uniform and cancel against the uniform azimuths of the spin models;
+        orbit-averaged precession (IMRPhenomX(P)HM, XP_NRTidalv2) does not depend on phi1,
+        other models may.  Magnitudes follow the spin_proposal (inverse CDF of the Sobol
+        coordinate); tilts are uniform.
         """
         out = np.zeros((n_q, n_s, 6))
         if not self.spins:
@@ -557,8 +551,8 @@ class FastOmega:
         return out
 
     def _table_file(self):
-        """Path of the cached table: the .npy memory map, or a table cached before 2026-10-16
-        (.npz, (n_q, n_tide, n_spin, n_xJ), loaded whole) if only that exists; None without a cache."""
+        """Path of the cached table: the .npy memory map, or a legacy .npz table (n_q, n_tide,
+        n_spin, n_xJ), loaded whole, if only that exists; None without a cache."""
         cache_dir, waveform, key = self._cache
         npz = _cache_path(cache_dir, "jtable", waveform, key)
         if npz is None:
@@ -607,8 +601,8 @@ class FastOmega:
         for k, q in enumerate(np.exp(self.lq)):
             lambdas = None
             if self.tides:
-                c1, c2 = jp.kappa2T_coefficients(q)
-                if waveform in NSBH_MODELS:        # kappa2T = c2 Lambda_NS; Lambda_NS clipped to the domain
+                c1, c2 = jp.kappa_eff_coefficients(q)
+                if waveform in NSBH_MODELS:        # kappa_eff = c2 Lambda_NS; Lambda_NS clipped to the domain
                     lmax = NSBH_MODELS[waveform]["lambda_max"]
                     lambdas = [(0.0, min(kap / c2, lmax)) for kap in self.kappa]
                 else:                              # NRTidal: share w of the heavier star in kappa_eff
@@ -627,8 +621,8 @@ class FastOmega:
         part = target[:-4] + ".part.npy"                  # renamed when complete: no torn cache
         mm = np.lib.format.open_memmap(part, mode="w+", dtype=np.float64, shape=(n_col, n_x))
         tide = np.arange(n_t)
-        # written pages stay in memory (dirty) until flushed: flush every ~256 MB, or the
-        # whole table would be resident before the end (2.9 GB peak for a 2.65 GB table)
+        # written pages stay in memory until flushed: flush every ~256 MB, or the whole
+        # table would be resident before the end
         per_flush = max(1, 2 ** 28 // (8 * n_t * n_x))
 
         def store(i, col):                                # task i = (q node, spin sample)
@@ -696,8 +690,8 @@ class FastOmega:
     def _tide_weights(self, tide_model, tp):
         """
         W(l, q, tide node): interpolation weights of the binary's tidal numbers on the tide
-        nodes, (kappa, split) flattened kappa-major: those of kappa2T(m1, m2) on the kappa
-        nodes, times (SPLIT_MODELS) those of the share w = c1 Lambda(m1) / kappa2T on the
+        nodes, (kappa, split) flattened kappa-major: those of kappa_eff(m1, m2) on the kappa
+        nodes, times (SPLIT_MODELS) those of the share w = c1 Lambda(m1) / kappa_eff on the
         split nodes.
         """
         fn, _ = jp.TIDE_MODELS[tide_model]
@@ -730,7 +724,7 @@ class FastOmega:
         return jnp.stack(out, axis=-1)
 
     def _kappa_weights(self, kap):
-        """W(l, q, kappa): interpolation weights of kappa2T (l, q) on the kappa nodes."""
+        """W(l, q, kappa): interpolation weights of kappa_eff (l, q) on the kappa nodes."""
         n_k  = len(self.kappa)
         # nodes: 0, then log-spaced from kappa[1]; the interval is found in ln kappa
         kn   = jnp.asarray(self.kappa)
@@ -791,7 +785,7 @@ class FastOmega:
                 f"and is dropped; widen m_tot_range / q_min", stacklevel=2)
         return out
 
-    def check_spins(self, spin_model="gwtc5_default", spin_params=None, min_ess=10.0, warn=True):
+    def check_spins(self, spin_model=None, spin_params=None, min_ess=10.0, warn=True):
         """
         Effective sample size of the spin importance weights w = p(s | Lambda_s) / g per q
         node, ESS = (sum w)^2 / sum w^2 out of the n_spin samples drawn from the spin
@@ -799,17 +793,16 @@ class FastOmega:
         function of Lambda_s, but its error grows as the ESS drops.  Median ESS, aligned
         XAS BBH, 128 samples, defensive_gwtc5_wide: gwtc5_default 91, gwtc3_default 67;
         gwtc5_default with sigma_chi = 0.1: 12, 0.05: 5; zeta = mu_t = 1, sigma_t = 0.1: 1.4.
-        The ESS is only a rough guide to the error.  Uniform proposal (2026-10-11; spread
-        over spin seeds at 1 kHz, 10x smaller at 100 Hz): 128 samples, gwtc3_default with
-        Beta(1.6, 4.1): ESS 41, error 4e-3; beta_chi = 20: ESS 3, 1e-2 (512 samples: ESS
-        12, 1e-4); 512 samples, zeta = 1, sigma_t = 0.1: ESS 2, 3e-2.
-        Populations much narrower than the proposal have a small ESS: raise n_spin
-        (cost and memory grow linearly) or lower a_max to the population's
-        support.  Returns dict(ess_median, ess_min, ess (n_q,), n_spin); warns
-        if ess_median < min_ess.  Call it with the extreme values of your prior.
+        The ESS is only a rough guide to the error: with the uniform proposal (spread over
+        spin seeds at 1 kHz, 10x smaller at 100 Hz) ESS 41 gave 4e-3 and ESS 3 gave 1e-2.
+        Populations much narrower than the proposal have a small ESS: raise n_spin (cost
+        and memory grow linearly) or lower a_max to the population's support.  Returns
+        dict(ess_median, ess_min, ess (n_q,), n_spin); warns if ess_median < min_ess.  Call
+        it with the extreme values of your prior.  spin_model None: self.spin_model.
         """
         if not self.spins:
             raise ValueError("this FastOmega was built without spins")
+        spin_model = spin_model or self.spin_model
         fn, dflt = jp.SPIN_MODELS[spin_model]
         a1, a2, c1, c2 = self._spin_arrays
         w = np.asarray(fn(a1, a2, c1, c2, {**dflt, **(spin_params or {})}, self.a_max)
@@ -855,15 +848,16 @@ class FastOmega:
                 f"Lambda_NS = {lim['lambda_max']:g}", stacklevel=2)
         return out
 
-    def table_intensity(self, spin_params=None, spin_model="gwtc5_default", kappa_index=0,
+    def table_intensity(self, spin_params=None, spin_model=None, kappa_index=0,
                         split_index=None):
         """
         Orientation- and spin-averaged J(x; q) reconstructed from the table,
         shape (len(self.ln_x), n_q), at the kappa node `kappa_index` and the split
         node `split_index` (SPLIT_MODELS; default: interpolated to the split
         Lambda1 / Lambda2 = q^6).  For diagnostics: compare with a direct average of
-        OrientationAverager.
+        OrientationAverager.  spin_model None: self.spin_model.
         """
+        spin_model = spin_model or self.spin_model
         Cbar = np.asarray(self._spin_coefficients(
             spin_model, {**jp.SPIN_MODELS[spin_model][1], **(spin_params or {})}))
         Cbar = Cbar[:, :, kappa_index * self._n_w:(kappa_index + 1) * self._n_w]   # (rank, n_q, n_w)
@@ -877,8 +871,10 @@ class FastOmega:
     # ------------------------------------------------------------------
 
     def omega(self, mass, rate, mass_params=None, rate_params=None, spin_params=None,
-              tide_params=None, n_sub=None, spin_model="gwtc5_default", tide_model="eos_lnpoly"):
-        """Omega_GW at self.freqs (not jitted; see make()); >= 0, and 0 below OMEGA_REL_CUT of the peak."""
+              tide_params=None, n_sub=None, spin_model=None, tide_model="eos_lnpoly"):
+        """Omega_GW at self.freqs (not jitted; see make()); >= 0, and 0 below OMEGA_REL_CUT of the peak.
+        spin_model None: self.spin_model."""
+        spin_model = spin_model or self.spin_model
         n_sub = n_sub or DEFAULT_N_SUB.get(mass, 4)
         m1, m2, jac = self._mass_grid(n_sub)
         mfun, mdef = jp.MASS_MODELS[mass]
@@ -921,7 +917,7 @@ class FastOmega:
         return (S * jnp.exp(-A_PRE * (np.log(T_SUN) + lnf))
                 * 4 * np.pi ** 2 * jnp.exp(3 * lnf) / (3 * H0_SI ** 2))
 
-    def make(self, mass, rate, spin_model="gwtc5_default", tide_model="eos_lnpoly", n_sub=None):
+    def make(self, mass, rate, spin_model=None, tide_model="eos_lnpoly", n_sub=None):
         """
         Jitted function
             omega(mass_params, rate_params, spin_params=None, tide_params=None)
@@ -929,6 +925,8 @@ class FastOmega:
         defaults (jax_populations.MASS_MODELS, RATE_DEFAULTS, SPIN_MODELS,
         TIDE_MODELS), so pass only the ones you sample.  spin_params and
         tide_params are ignored unless the table was built with spins/tides.
+        spin_model None: self.spin_model (gwtc5_default for black holes, a_max >= 0.5;
+        uniform_isotropic for neutron stars).
 
         Omega is >= 0, and exactly 0 below 1e-12 of its peak (OMEGA_REL_CUT), i.e.
         above the last ringdown, where the FFTs leave only round-off.  A likelihood
@@ -943,6 +941,7 @@ class FastOmega:
         weights (check_spins), with NSBH tides Lambda_NS against the waveform's
         limit (check_tides); check the extremes of your prior yourself.
         """
+        spin_model = spin_model or self.spin_model
         if mass not in jp.MASS_MODELS:
             raise ValueError(f"unknown mass model '{mass}'; available: {list(jp.MASS_MODELS)}")
         if rate not in jp.RATE_DEFAULTS:
