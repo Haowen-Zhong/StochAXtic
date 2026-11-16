@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name            = "StochAXtic"
 version         = "0.1.0"
 description     = "Fast Omega_GW(f) of a compact-binary population (all frequencies per waveform call)"
-authors         = [{ name = "Haowen Zhong", email = "zhong461@umn.edu" }]
+authors         = [{ name = "Haowen Zhong", email = "hzhong23@jh.edu" }]
 requires-python = ">=3.9"
 dependencies    = ["numpy", "scipy", "astropy"]
 
