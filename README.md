@@ -9,7 +9,7 @@ Fast $\Omega_{\rm GW}(f)$ of a compact-binary population, differentiable in the
 population hyperparameters $\Lambda$ and ready for MCMC with numpyro.
 
 $$
-\Omega_{\rm GW}(f) = \frac{4\pi^2 f^3}{3H_0^2}\int \mathrm{d}z\,\frac{\mathrm{d}N}{\mathrm{d}z\,\mathrm{d}t}
+\Omega_{\rm GW}(f) = \frac{4\pi^2 f^3}{3H_0^2}\int \mathrm{d}z \frac{\mathrm{d}N}{\mathrm{d}z \mathrm{d}t}
 \Big\langle |\tilde h_+(f)|^2 + |\tilde h_\times(f)|^2 \Big\rangle_{\rm masses,\ spins,\ tides,\ orientation}
 $$
 
