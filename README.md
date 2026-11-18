@@ -71,3 +71,17 @@ Data/                  data used to generate figures in the paper
 ```
 
 ## Citation
+## Citation
+
+If you use StochAXtic, please cite [arXiv:2611.22999](https://arxiv.org/abs/2611.22999):
+
+```bibtex
+@article{Zhong:2026stochaxtic,
+    author        = "Zhong, Haowen and Vislosky, Ethan and Berti, Emanuele",
+    title         = "{StochAXtic: a JAX-Accelerated, End-to-End Differentiable Framework for Gravitational-Wave Backgrounds from Compact Binary Populations}",
+    eprint        = "2611.22999",
+    archivePrefix = "arXiv",
+    primaryClass  = "gr-qc",
+    year          = "2026"
+}
+```
